@@ -17,15 +17,17 @@ from vitpose_model import ViTPoseModel
 
 import json
 from typing import Dict, Optional
+from datetime import datetime
+TODAY = datetime.today().strftime('%Y-%m-%d')
 
-def main():
+def main(custom_frames_path=None,custom_output_folder=None,custom_focal_length=None):
     parser = argparse.ArgumentParser(description='HaMeR demo code')
     parser.add_argument('--checkpoint', type=str, default=DEFAULT_CHECKPOINT, help='Path to pretrained model checkpoint')
     parser.add_argument('--img_folder', type=str, default='images', help='Folder with input images')
     parser.add_argument('--out_folder', type=str, default='out_demo', help='Output folder to save rendered results')
-    parser.add_argument('--side_view', dest='side_view', action='store_true', default=False, help='If set, render side view also')
+    parser.add_argument('--side_view', dest='side_view', action='store_true', default=True, help='If set, render side view also')
     parser.add_argument('--full_frame', dest='full_frame', action='store_true', default=True, help='If set, render all people together also')
-    parser.add_argument('--save_mesh', dest='save_mesh', action='store_true', default=False, help='If set, save meshes to disk also')
+    parser.add_argument('--save_mesh', dest='save_mesh', action='store_true', default=True, help='If set, save meshes to disk also')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for inference/fitting')
     parser.add_argument('--rescale_factor', type=float, default=2.0, help='Factor for padding the bbox')
     parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
@@ -37,8 +39,13 @@ def main():
     download_models(CACHE_DIR_HAMER)
     model, model_cfg = load_hamer(args.checkpoint)
 
+    if custom_focal_length is not None:
+        model_cfg.defrost()
+        model_cfg.EXTRA.FOCAL_LENGTH = custom_focal_length
+    
+
     # Setup HaMeR model
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cuda') #if torch.cuda.is_available() else torch.device('cpu') before python- add  CUDA_VISIBLE_DEVICES=1
     model = model.to(device)
     model.eval()
 
@@ -66,15 +73,22 @@ def main():
 
     # Setup the renderer
     renderer = Renderer(model_cfg, faces=model.mano.faces)
-
+    args.out_folder = os.path.join(args.out_folder, TODAY)
     # Make output directory if it does not exist
+    if custom_output_folder is not None:
+        args.out_folder = custom_output_folder
+
     os.makedirs(args.out_folder, exist_ok=True)
 
     # Get all demo images ends with .jpg or .png
-    img_paths = [img for end in args.file_type for img in Path(args.img_folder).glob(end)]
+    images_all = args.img_folder if os.path.isdir(args.img_folder) else Path(custom_frames_path)
+
+    img_paths = [img for end in args.file_type for img in Path(images_all).glob(end)]
 
     # Iterate over all images in folder
     for img_path in img_paths:
+        if any(suffix in str(img_path.stem) for suffix in ("_0","_1", "_2", "_3", "_4", "_5", "_6", "_7", "_8", "_all")):
+            continue
         img_cv2 = cv2.imread(str(img_path))
 
         # Detect humans in image
@@ -93,6 +107,7 @@ def main():
         )
 
         bboxes = []
+        bboxes_xyxy = []
         is_right = []
 
         # Use hands based on hand keypoint detections
@@ -105,19 +120,34 @@ def main():
             valid = keyp[:,2] > 0.5
             if sum(valid) > 3:
                 bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
+                bbox_norm = [0, keyp[valid,0].min()/img.shape[1], keyp[valid,1].min()/img.shape[0], keyp[valid,0].max()/img.shape[1], keyp[valid,1].max()/img.shape[0]]
+                bboxes_xyxy.append(bbox_norm)
                 bboxes.append(bbox)
                 is_right.append(0)
             keyp = right_hand_keyp
             valid = keyp[:,2] > 0.5
             if sum(valid) > 3:
                 bbox = [keyp[valid,0].min(), keyp[valid,1].min(), keyp[valid,0].max(), keyp[valid,1].max()]
+                bbox_norm = [0, keyp[valid,0].min()/img.shape[1], keyp[valid,1].min()/img.shape[0], keyp[valid,0].max()/img.shape[1], keyp[valid,1].max()/img.shape[0]]
+                bboxes_xyxy.append(bbox_norm)
                 bboxes.append(bbox)
                 is_right.append(1)
 
         if len(bboxes) == 0:
             continue
+        
+        # # save for each image its bboxes_xyxy as a txt file each bbox in a line on the format 0 x1 y1 x2 y2 inside a new folder with images_all name  
+        # new_dir_name=Path(images_all).name+"_leg"
+        # make_dir = os.path.join(args.out_folder, new_dir_name)
+        # os.makedirs(make_dir, exist_ok=True)
+        # with open(os.path.join(make_dir, img_path.stem + '.txt'), 'w') as f:
+        #     for bbox in bboxes_xyxy:
+        #         f.write(' '.join(map(str, bbox)) + '\n')
+
+        # continue
 
         boxes = np.stack(bboxes)
+        
         right = np.stack(is_right)
 
         # Run reconstruction on all detected hands
@@ -140,6 +170,7 @@ def main():
             box_size = batch["box_size"].float()
             img_size = batch["img_size"].float()
             multiplier = (2*batch['right']-1)
+            # scaled_focal_length = model_cfg.EXTRA.FOCAL_LENGTH / model_cfg.MODEL.IMAGE_SIZE * img_size.max()
             scaled_focal_length = model_cfg.EXTRA.FOCAL_LENGTH / model_cfg.MODEL.IMAGE_SIZE * img_size.max()
             pred_cam_t_full = cam_crop_to_full(pred_cam, box_center, box_size, img_size, scaled_focal_length).detach().cpu().numpy()
 
@@ -183,7 +214,7 @@ def main():
                 all_right.append(is_right)
 
                 # Save all meshes to disk
-                if args.save_mesh:
+                if args.save_mesh or True: # ROI added
                     camera_translation = cam_t.copy()
                     tmesh = renderer.vertices_to_trimesh(verts, camera_translation, LIGHT_BLUE, is_right=is_right)
                     tmesh.export(os.path.join(args.out_folder, f'{img_fn}_{person_id}.obj'))
