@@ -2,6 +2,7 @@ import glob
 from PIL import Image
 import os
 from moviepy.editor import VideoFileClip
+import numpy as np
 from demo import main as invoke_hamer
 from pathlib import Path
 
@@ -87,10 +88,30 @@ def calculate_movement_vectors(source_folder):
                     vectors.append((dx, dy, dz))
         
         # Write results to a text file
-        output_file = Path(f"{source_folder}/movement_vectors_{frame1}_{frame2}.txt")
+        output_directory = Path(f"{source_folder}/movement_vectors")
+        if not os.path.exists(output_directory):
+            os.makedirs(output_directory)
+        output_file = Path(f"{output_directory}/movement_vectors_{frame1}_{frame2}.txt")
         with open(output_file, 'w') as f:
             for vector in vectors:
                 f.write(f"{vector[0]} {vector[1]} {vector[2]}\n")
+
+
+
+def build_video_movment_matrix(folder_path):
+    folder_path = Path(f"{folder_path}/movement_vectors")
+    frames = []
+    for file_name in os.listdir(folder_path):
+        if file_name.endswith('.txt'):
+            file_path = os.path.join(folder_path, file_name)
+            with open(file_path, 'r') as file:
+                points = [[float(num) for num in line.split()] for line in file]
+                frames.append(points)
+    moution_matrix= np.array(frames)
+    moution_matrix.shape
+    np.save(f'{folder_path}/moution_matrix.npy', np.array(moution_matrix))
+    
+
 
 
 
@@ -98,16 +119,21 @@ def calculate_movement_vectors(source_folder):
 
 if __name__ == "__main__":
     params={
-        "video_path": "/data/home/roipapo/datasets/UW_2024/p046_suture.mp4",
+        "video_path": "/data/shared-data/scalpel/Hands_datasets/UW_2024/p046_suture.mp4",
         "output_root": "Scalpel_output",
         "fps": 1,
-        "frame_limit": 20
+        "frame_limit": 20,
+        "focal_length": 500
     }
     
     output_directory = Path(f"{params['output_root']}/{params['video_path'].split('/')[-1][:-4]}")
     # extract_frames(params["video_path"], output_directory, fps=params["fps"],frame_limit= params["frame_limit"])
-    invoke_hamer(custom_frames_path=output_directory.resolve(),custom_output_folder=output_directory.resolve(),custom_focal_length=1000)
-    calculate_movement_vectors(output_directory.resolve())
+    # invoke_hamer(custom_frames_path=output_directory.resolve(),custom_output_folder=output_directory.resolve(),custom_focal_length=params["focal_length"])
+    # calculate_movement_vectors(output_directory.resolve())
+    build_video_movment_matrix(output_directory.resolve())
+    
+    
+
 
 
 
